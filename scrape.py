@@ -4,6 +4,7 @@ from typing import List, Tuple
 import requests
 from bs4 import BeautifulSoup
 import os
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 num_dict = {
     "one": 1,
@@ -66,16 +67,11 @@ def parse_textual_numbers(s):
     return total
 
 
-# Extract number of pages from format description
 def extract_number_of_pages(format_string):
-    # Pattern matches any text that might indicate a page number
-    match = re.search(r"(\d+|[\w\s-]+)\s*pages", format_string, re.IGNORECASE)
-    if match:
-        number_text = match.group(1)
-        try:
-            return int(number_text)
-        except ValueError:
-            return parse_textual_numbers(number_text)
+    wanted = re.search(r"(\d+|[\w\s-]+)\s*pages", format_string, re.IGNORECASE)
+    if wanted:
+        number_text = wanted.group(1)
+        return parse_textual_numbers(number_text)
     return None
 
 
@@ -93,22 +89,32 @@ def get_record_data() -> List[Tuple[str, str, int]]:
     return data
 
 
-def get_ocr_text(url):
-    response = requests.get(url)
+def get_ocr_text(session, url):
+    response = session.get(url)
     soup = BeautifulSoup(response.content, "html.parser")
     ocr_text = soup.find(id="ocr-data").pre.get_text(strip=True)
     return ocr_text
 
 
+def process_record(session, date, url, pages):
+    path = f"data/{date}"
+    os.makedirs(path, exist_ok=True)
+    for i in range(1, pages + 1):
+        ocr_text = get_ocr_text(session, f"{url}/m1/{i}")
+        with open(f"{path}/{i}.txt", "w") as f:
+            f.write(ocr_text)
+
+
 if __name__ == "__main__":
     print("Scraping data...")
     data = get_record_data()
-    os.makedirs("data")
-    for date, url, pages in data:
-        path = f"data/{date}"
-        os.makedirs(path, exist_ok=True)
-        for i in range(1, pages + 1):
-            ocr_text = get_ocr_text(f"{url}/m1/{i}")
-            with open(f"{path}/{i}.txt", "w") as f:
-                f.write(ocr_text)
+    os.makedirs("data", exist_ok=True)
+    with requests.Session() as session:
+        with ThreadPoolExecutor(max_workers=10) as executor:
+            futures = [
+                executor.submit(process_record, session, date, url, pages)
+                for date, url, pages in data
+            ]
+            for future in as_completed(futures):
+                future.result()
     print("Data scraped successfully.")
